@@ -276,6 +276,7 @@
     .st-think #call-av{animation:callThink 1.2s ease-in-out infinite}
     @keyframes callRing{0%{transform:scale(.9);opacity:.8}100%{transform:scale(1.6);opacity:0}}
     @keyframes callThink{0%,100%{opacity:1}50%{opacity:.55}}
+    #call-voice{position:absolute;top:calc(env(safe-area-inset-top,0px) + 14px);right:14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:6px 8px;font-size:.78rem;font-family:inherit}
     #call-live{max-width:520px;min-height:4.5em;max-height:30vh;overflow-y:auto;font-size:1rem;line-height:1.5;color:var(--text)}
     #call-btns{display:flex;gap:28px;align-items:center}
     .call-b{width:62px;height:62px;border-radius:50%;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;background:var(--surface2);color:var(--text)}
@@ -371,6 +372,13 @@
       <div id="call-status">Connexion…</div>
       <div id="call-time">00:00</div>
     </div>
+    <select id="call-voice" onchange="setVoice(this.value)" aria-label="Voix">
+      <option value="Charon">Voix d'homme · grave</option>
+      <option value="Orus">Voix d'homme · ferme</option>
+      <option value="Algieba">Voix d'homme · douce</option>
+      <option value="Puck">Voix d'homme · dynamique</option>
+      <option value="browser">Voix du téléphone</option>
+    </select>
     <div id="call-stage" onclick="interruptCall()" title="Touchez pour interrompre"><div id="call-av"></div></div>
     <div id="call-live"></div>
     <div id="call-btns">
@@ -602,7 +610,7 @@
     voiceOn = !voiceOn; syncVoice();
     if (voiceOn) startMic(); else { stopTalk(); stopMic(); }
   }
-  function speak(text) {
+  function speakBrowser(text) {
     if (!voiceOn) return;
     if (!window.speechSynthesis) { setTimeout(startMic, 300); return; }
     const clean = text.replace(/[*#`_>~|]/g, "").replace(/\p{Extended_Pictographic}/gu, "").replace(/\s+/g, " ").trim();
@@ -627,6 +635,7 @@
     document.getElementById("call-mute").classList.remove("on");
     document.getElementById("mute-slash").style.display = "none";
     document.getElementById("call").hidden = false;
+    document.getElementById("call-voice").value = userVoice;
     stopTalk(); voiceOn = true; syncVoice();
     try { if (navigator.wakeLock) navigator.wakeLock.request("screen").then(w => { wake = w; }).catch(() => {}); } catch (e) {}
     callTick(); callTimer = setInterval(callTick, 250);
@@ -658,7 +667,60 @@
     else if (st === "speak" || st === "idle" || st === "mute") { const m = history[history.length - 1]; if (m && m.role === "assistant") live = m.content; }
     document.getElementById("call-live").textContent = live.replace(/[*#`_]/g, "");
   }
-  function stopTalk() { speaking = false; if (window.speechSynthesis) speechSynthesis.cancel(); }
+  /* ── VOIX RÉALISTE (Gemini TTS via /api/tts) ── */
+  const PERSONA_VOICE = { lare: "Charon", kossi: "Orus", edem: "Puck", afi: "Aoede", ama: "Kore" };
+  let userVoice = load("lare_voice", "Charon");
+  let audioEl = null, ttsGen = 0;
+  function curVoice() { return userVoice === "browser" ? "browser" : (personaId === "lare" ? userVoice : (PERSONA_VOICE[personaId] || "Charon")); }
+  function setVoice(v) { userVoice = v; try { localStorage.setItem("lare_voice", JSON.stringify(v)); } catch (e) {} stopTalk(); }
+  function cleanTxt(t) { return t.replace(/[*#`_>~|]/g, "").replace(/\p{Extended_Pictographic}/gu, "").replace(/\s+/g, " ").trim(); }
+  function splitChunks(t) {
+    const parts = t.match(/[^.!?…\n]+[.!?…]*\s*/g) || [t], out = []; let cur = "";
+    for (const p of parts) {
+      const lim = out.length === 0 ? 180 : 350;
+      if (cur && (cur + p).length > lim) { out.push(cur.trim()); cur = p; } else cur += p;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out.slice(0, 6);
+  }
+  async function fetchTts(t) {
+    const r = await fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: t, voice: curVoice() }) });
+    if (!r.ok) throw new Error("tts " + r.status);
+    const d = await r.json();
+    return "data:audio/wav;base64," + d.audio;
+  }
+  function playUrl(url) {
+    return new Promise(res => {
+      const a = new Audio(url); audioEl = a;
+      a.onended = a.onerror = () => res();
+      a.play().catch(() => res());
+    });
+  }
+  async function speakNeural(text) {
+    const clean = cleanTxt(text);
+    if (!clean) { if (voiceOn) setTimeout(startMic, 300); return; }
+    const gen = ++ttsGen, chunks = splitChunks(clean);
+    speaking = true;
+    let next = fetchTts(chunks[0]); next.catch(() => {});
+    for (let i = 0; i < chunks.length; i++) {
+      let url;
+      try { url = await next; } catch (e) {
+        if (gen !== ttsGen) return;
+        console.error("TTS", e); speaking = false; speakBrowser(chunks.slice(i).join(" ")); return;
+      }
+      if (gen !== ttsGen) return;
+      if (i + 1 < chunks.length) { next = fetchTts(chunks[i + 1]); next.catch(() => {}); }
+      await playUrl(url);
+      if (gen !== ttsGen) return;
+    }
+    speaking = false; if (voiceOn) setTimeout(startMic, 300);
+  }
+  function speak(text) {
+    if (!voiceOn) return;
+    if (curVoice() === "browser") speakBrowser(text); else speakNeural(text);
+  }
+  function stopTalk() {
+    ttsGen++; if (audioEl) { try { audioEl.pause(); } catch (e) {} audioEl = null; } speaking = false; if (window.speechSynthesis) speechSynthesis.cancel(); }
 
   /* ── INTERLOCUTEURS ── */
   function P() { return PERSONAS[personaId] || PERSONAS.lare; }
