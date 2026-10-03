@@ -958,7 +958,11 @@
   }
 
   function fmt(t) {
-    return escHtml(t).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    return escHtml(t)
+      .replace(/^[ \t]*[*-] /gm, "• ")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>");
   }
   function escHtml(t) {
     return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -988,7 +992,7 @@
 
       history.push({ role: "assistant", content: reply, t: now() }); save(); speak(reply);
       if (tw) { tw.push(reply); await tw.finish(); }
-      else { removeTyping(); addMessage("assistant", reply); }
+      else { removeTyping(); const tw2 = typewriter(addMessage("assistant", "").firstElementChild); tw2.push(reply); await tw2.finish(); }
 
     } catch (err) {
       removeTyping();
