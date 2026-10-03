@@ -67,6 +67,7 @@ exports.handler = async (event) => {
   const supportsUrl = (m) => /2\.5|latest/.test(m);
 
   const errors = [];
+  const quota = [];
   const started = Date.now();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const model of MODELS) {
@@ -86,8 +87,11 @@ exports.handler = async (event) => {
 
       if (r.status === 429) {
         const msg = JSON.stringify(data.error || {});
-        // quota journalier vs trop de requêtes
-        return json(429, { error: /per.?day|daily/i.test(msg) ? "daily_limit" : "rate_limited" });
+        const daily = /per.?day|daily/i.test(msg);
+        errors.push(`${model} 429${useTools ? "+web" : ""}${daily ? " (quota jour)" : ""}`);
+        quota.push(daily);
+        if (useTools) { useTools = false; continue; } // quota de la recherche web atteint : on réessaie sans
+        break; // chaque modèle a son propre quota : modèle suivant
       }
       if (!r.ok) {
         errors.push(`${model} ${r.status}${useTools ? "+web" : ""}`);
@@ -108,6 +112,9 @@ exports.handler = async (event) => {
       break;
     }
     }
+  }
+  if (quota.length && errors.every((e) => /429/.test(e) || true) && !errors.some((e) => !/429/.test(e) && !/503|500|400/.test(e))) {
+    return json(429, { error: quota.every(Boolean) ? "daily_limit" : "rate_limited", detail: errors.join(", ") });
   }
   return json(502, { error: "upstream_error", detail: "Gemini surchargé ou indisponible (" + errors.join(", ") + "). Réessayez." });
 };
