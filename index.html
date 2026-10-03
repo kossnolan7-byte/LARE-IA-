@@ -634,7 +634,7 @@
     });
     if (res.status === 429) {
       let d = {}; try { d = await res.json(); } catch (e) {}
-      throw { code: d.error === "daily_limit" ? "daily_limit" : "rate_limited" };
+      console.error("LARE 429", d); throw { code: d.error === "daily_limit" ? "daily_limit" : "rate_limited", detail: d.detail };
     }
     if (!res.ok) {
       let d = {}; try { d = await res.json(); } catch (e) {}
@@ -802,7 +802,7 @@
       removeTyping();
       if (att) { pending = att; renderPending(); }
       history.pop(); convs = convs.filter(c => c.messages.length); persist();
-      addError(err && err.code === "not_granted" ? "Autorisation refusée : acceptez la demande d'autorisation pour discuter avec LARE." : err && err.code === "daily_limit" ? "Vous avez atteint la limite de messages pour aujourd'hui. Revenez demain !" : err && err.code === "rate_limited" ? "Trop de messages d'un coup, patientez un instant." : "LARE ne répond pas : " + ((err && err.message) || "réessayez dans un instant."));
+      addError(err && err.code === "not_granted" ? "Autorisation refusée : acceptez la demande d'autorisation pour discuter avec LARE." : err && err.code === "daily_limit" ? "Vous avez atteint la limite de messages pour aujourd'hui. Revenez demain !" : err && err.code === "rate_limited" ? "Limite Gemini atteinte sur tous les modèles, patientez 1 minute puis réessayez." + (err.detail ? " [" + err.detail + "]" : "") : "LARE ne répond pas : " + ((err && err.message) || "réessayez dans un instant."));
     } finally {
       loading = false;
       sendBtn.disabled = !inputEl.value.trim() && !pending;
