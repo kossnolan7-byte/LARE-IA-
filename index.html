@@ -619,7 +619,11 @@
       let d = {}; try { d = await res.json(); } catch (e) {}
       throw { code: d.error === "daily_limit" ? "daily_limit" : "rate_limited" };
     }
-    if (!res.ok) throw new Error("erreur " + res.status);
+    if (!res.ok) {
+      let d = {}; try { d = await res.json(); } catch (e) {}
+      console.error("LARE /api/chat", res.status, d);
+      throw new Error(d.detail || ("erreur " + res.status));
+    }
     const data = await res.json();
     return data.reply;
   }
@@ -730,7 +734,7 @@
     } catch (err) {
       removeTyping();
       history.pop(); convs = convs.filter(c => c.messages.length); persist();
-      addError(err && err.code === "not_granted" ? "Autorisation refusée : acceptez la demande d'autorisation pour discuter avec LARE." : err && err.code === "daily_limit" ? "Vous avez atteint la limite de messages pour aujourd'hui. Revenez demain !" : err && err.code === "rate_limited" ? "Trop de messages d'un coup, patientez un instant." : "LARE ne répond pas, réessayez dans un instant.");
+      addError(err && err.code === "not_granted" ? "Autorisation refusée : acceptez la demande d'autorisation pour discuter avec LARE." : err && err.code === "daily_limit" ? "Vous avez atteint la limite de messages pour aujourd'hui. Revenez demain !" : err && err.code === "rate_limited" ? "Trop de messages d'un coup, patientez un instant." : "LARE ne répond pas : " + ((err && err.message) || "réessayez dans un instant."));
     } finally {
       loading = false;
       sendBtn.disabled = !inputEl.value.trim();
