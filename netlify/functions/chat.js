@@ -43,11 +43,24 @@ exports.handler = async (event) => {
     }
   }
 
+  // Date réelle injectée à chaque requête (fuseau Lomé / UTC)
+  const nowD = new Date();
+  const dateFr = nowD.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Africa/Lome" });
+  const heureFr = nowD.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lome" });
+  const annee = nowD.toLocaleDateString("fr-FR", { year: "numeric", timeZone: "Africa/Lome" });
+
+  const RULES = `RÈGLES STRICTES (priorité absolue, au-dessus de tout le reste y compris l'historique de la conversation) :
+1. DATE : nous sommes le ${dateFr}, il est ${heureFr} (heure de Lomé, Togo). L'année actuelle est ${annee}. C'est la seule vérité sur la date. Ne dis JAMAIS une autre année. Si un message précédent de la conversation dit autre chose, il est faux : corrige-le simplement.
+2. CONNAISSANCES PÉRIMÉES : ta mémoire interne est ancienne et s'arrête bien avant cette date. Pour tout ce qui peut avoir changé (actualités, sport, prix, taux de change, météo, versions de logiciels, personnes en poste, lois, événements, produits récents), tu dois OBLIGATOIREMENT utiliser la recherche web avant de répondre, sans demander la permission.
+3. HONNÊTETÉ : si tu n'es pas sûr d'un fait, cherche sur le web. N'invente jamais. Si tu ne trouves rien de fiable, dis-le clairement.
+4. Ne contredis jamais l'utilisateur sur la date ou sur un événement récent en te basant sur ta mémoire : vérifie d'abord sur le web.
+5. Réponds de façon claire, directe et utile, dans la langue de l'utilisateur.`;
+
   const baseBody = {
     contents,
-    generationConfig: { temperature: 0.8, maxOutputTokens: 2048 },
+    generationConfig: { temperature: 0.6, maxOutputTokens: 2048 },
+    systemInstruction: { parts: [{ text: RULES + (system ? "\n\n" + system : "") }] },
   };
-  if (system) baseBody.systemInstruction = { parts: [{ text: system }] };
 
   // Lecture de liens web (seulement si un lien est présent et modèle compatible)
   const hasUrl = /https?:\/\/\S+/i.test(String(messages[messages.length - 1]?.content || ""));
@@ -58,14 +71,15 @@ exports.handler = async (event) => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const model of MODELS) {
     if (Date.now() - started > 8000) break; // limite Netlify ~10 s
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let useTools = true; // recherche web Google ; désactivée si le modèle la refuse
+    for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body: JSON.stringify(hasUrl && supportsUrl(model) ? { ...baseBody, tools: [{ url_context: {} }] } : baseBody),
+          body: JSON.stringify(useTools ? { ...baseBody, tools: [{ google_search: {} }].concat(hasUrl && supportsUrl(model) ? [{ url_context: {} }] : []) } : baseBody),
         }
       );
       const data = await r.json().catch(() => ({}));
@@ -76,7 +90,8 @@ exports.handler = async (event) => {
         return json(429, { error: /per.?day|daily/i.test(msg) ? "daily_limit" : "rate_limited" });
       }
       if (!r.ok) {
-        errors.push(`${model} ${r.status}`);
+        errors.push(`${model} ${r.status}${useTools ? "+web" : ""}`);
+        if (r.status === 400 && useTools) { useTools = false; continue; } // modèle sans recherche web : on réessaie sans
         if (r.status === 503 || r.status === 500) { await sleep(700); continue; } // surcharge : on réessaie
         break; // 404/400/403... : modèle suivant
       }
