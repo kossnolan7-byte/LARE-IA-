@@ -2,8 +2,11 @@
 const MODELS = [
   process.env.GEMINI_MODEL,
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
   "gemini-flash-latest",
+  "gemini-flash-lite-latest",
 ].filter(Boolean);
 
 const json = (statusCode, body) => ({
@@ -36,8 +39,12 @@ exports.handler = async (event) => {
   };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
 
-  let lastErr = "";
+  const errors = [];
+  const started = Date.now();
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const model of MODELS) {
+    if (Date.now() - started > 8000) break; // limite Netlify ~10 s
+    for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -55,20 +62,23 @@ exports.handler = async (event) => {
         return json(429, { error: /per.?day|daily/i.test(msg) ? "daily_limit" : "rate_limited" });
       }
       if (!r.ok) {
-        lastErr = `${model} -> ${r.status}: ${(data.error && data.error.message) || "erreur"}`;
-        continue; // essaie le modèle suivant
+        errors.push(`${model} ${r.status}`);
+        if (r.status === 503 || r.status === 500) { await sleep(700); continue; } // surcharge : on réessaie
+        break; // 404/400/403... : modèle suivant
       }
 
       const parts = data.candidates?.[0]?.content?.parts || [];
       const reply = parts.map((p) => p.text || "").join("").trim();
       if (!reply) {
-        lastErr = `${model} -> réponse vide (${data.candidates?.[0]?.finishReason || data.promptFeedback?.blockReason || "?"})`;
-        continue;
+        errors.push(`${model} vide`);
+        break;
       }
       return json(200, { reply });
     } catch (e) {
-      lastErr = `${model} -> ${e.message}`;
+      errors.push(`${model} ${e.message}`);
+      break;
+    }
     }
   }
-  return json(502, { error: "upstream_error", detail: lastErr });
+  return json(502, { error: "upstream_error", detail: "Gemini surchargé ou indisponible (" + errors.join(", ") + "). Réessayez." });
 };
