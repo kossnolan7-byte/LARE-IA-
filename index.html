@@ -774,17 +774,36 @@
     else addMessage("assistant", P().greet || `Bonjour! Je suis ${AGENT}, votre agent IA personnel. Comment puis-je vous aider aujourd'hui? 🤖✨`);
   }
 
-  async function askLare(att) {
+  async function askLare(att, onDelta) {
     const turns = history.slice(-20).map(({ role, content }) => ({ role, content }));
     while (turns.length && turns[0].role !== "user") turns.shift();
     const nm = P().name;
     const system = (callOpen ? CALL_RULE : "") + buildSystem() + "\n\nIdentité : tu es " + nm + ". Présente-toi uniquement sous ce nom. LARE a été créé par Casimir KANWORE : dis-le si on te demande qui t'a créé. Si on te demande quel modèle d'IA ou quelle entreprise te fait fonctionner, réponds que tu ne détailles pas ta technologie, sans rien affirmer de faux. Si on te demande sincèrement si tu es humain, dis que tu es une IA.";
     turns[turns.length - 1].content += "\n\n(Rappel : réponds en tant que " + nm + ", sous ce nom.)";
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: turns, system, attachment: att ? { name: att.name, mime: att.mime, data: att.data, text: att.text } : null })
-    });
+    const bodyStr = JSON.stringify({ messages: turns, system, attachment: att ? { name: att.name, mime: att.mime, data: att.data, text: att.text } : null });
+    const hdr = { "Content-Type": "application/json" };
+    const fail = async (r) => {
+      let d = {}; try { d = await r.json(); } catch (e) {}
+      console.error("LARE", r.status, d);
+      if (r.status === 429) throw { code: d.error === "daily_limit" ? "daily_limit" : "rate_limited", detail: d.detail };
+      throw new Error(d.detail || ("erreur " + r.status));
+    };
+    // 1) Réponse en direct (streaming), mot par mot
+    if (onDelta) {
+      let sr = null;
+      try { sr = await fetch("/api/chat-stream", { method: "POST", headers: hdr, body: bodyStr }); } catch (e) {}
+      if (sr && sr.ok && sr.body) {
+        const rd = sr.body.getReader(), dec = new TextDecoder(); let full = "";
+        try {
+          while (true) { const { done, value } = await rd.read(); if (done) break; full += dec.decode(value, { stream: true }); if (full) onDelta(full); }
+        } catch (e) { if (!full) throw e; }
+        if (full) return full;
+      } else if (sr && sr.status !== 404 && sr.status !== 405 && sr.status < 500) {
+        await fail(sr);
+      }
+    }
+    // 2) Secours : réponse complète d'un coup
+    const res = await fetch("/api/chat", { method: "POST", headers: hdr, body: bodyStr });
     if (res.status === 429) {
       let d = {}; try { d = await res.json(); } catch (e) {}
       console.error("LARE 429", d); throw { code: d.error === "daily_limit" ? "daily_limit" : "rate_limited", detail: d.detail };
@@ -883,6 +902,22 @@
     row.appendChild(bubble);
     messagesEl.appendChild(row);
     scrollBottom();
+    return bubble;
+  }
+
+  function typewriter(el) {
+    let target = "", shown = 0, closed = false, resolveF = null;
+    const timer = setInterval(() => {
+      const back = target.length - shown;
+      if (back > 0) {
+        shown = Math.min(target.length, shown + Math.max(1, Math.ceil(back / 14)));
+        el.innerHTML = fmt(target.slice(0, shown)); scrollBottom();
+      } else if (closed) { clearInterval(timer); if (resolveF) resolveF(); }
+    }, 30);
+    return {
+      push(t) { target = t; },
+      finish() { closed = true; return new Promise(r => { resolveF = r; if (shown >= target.length) { clearInterval(timer); r(); } }); }
+    };
   }
 
   function addTyping() {
@@ -945,11 +980,15 @@
     addTyping();
 
     try {
-      const reply = (await askLare(att)) || "Désolé, aucune réponse générée.";
+      let tw = null;
+      const reply = (await askLare(att, (full) => {
+        if (!tw) { removeTyping(); tw = typewriter(addMessage("assistant", "").firstElementChild); }
+        tw.push(full);
+      })) || "Désolé, aucune réponse générée.";
 
-      removeTyping();
-      addMessage("assistant", reply);
       history.push({ role: "assistant", content: reply, t: now() }); save(); speak(reply);
+      if (tw) { tw.push(reply); await tw.finish(); }
+      else { removeTyping(); addMessage("assistant", reply); }
 
     } catch (err) {
       removeTyping();
