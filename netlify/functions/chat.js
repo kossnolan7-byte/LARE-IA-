@@ -23,7 +23,7 @@ exports.handler = async (event) => {
 
   let payload;
   try { payload = JSON.parse(event.body || "{}"); } catch (e) { return json(400, { error: "bad_json" }); }
-  const { messages = [], system = "" } = payload;
+  const { messages = [], system = "", attachment = null } = payload;
 
   const contents = messages
     .filter((m) => m && m.content)
@@ -33,11 +33,25 @@ exports.handler = async (event) => {
     }));
   if (!contents.length) return json(400, { error: "no_messages" });
 
-  const body = {
+  // Pièce jointe : ajoutée au dernier message de l'utilisateur
+  const lastParts = contents[contents.length - 1].parts;
+  if (attachment) {
+    if (attachment.data && attachment.mime) {
+      lastParts.push({ inlineData: { mimeType: attachment.mime, data: attachment.data } });
+    } else if (attachment.text) {
+      lastParts.push({ text: `\n\nContenu du fichier « ${attachment.name || "fichier"} » :\n${String(attachment.text).slice(0, 60000)}` });
+    }
+  }
+
+  const baseBody = {
     contents,
     generationConfig: { temperature: 0.8, maxOutputTokens: 2048 },
   };
-  if (system) body.systemInstruction = { parts: [{ text: system }] };
+  if (system) baseBody.systemInstruction = { parts: [{ text: system }] };
+
+  // Lecture de liens web (seulement si un lien est présent et modèle compatible)
+  const hasUrl = /https?:\/\/\S+/i.test(String(messages[messages.length - 1]?.content || ""));
+  const supportsUrl = (m) => /2\.5|latest/.test(m);
 
   const errors = [];
   const started = Date.now();
@@ -51,7 +65,7 @@ exports.handler = async (event) => {
         {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body: JSON.stringify(body),
+          body: JSON.stringify(hasUrl && supportsUrl(model) ? { ...baseBody, tools: [{ url_context: {} }] } : baseBody),
         }
       );
       const data = await r.json().catch(() => ({}));
